@@ -103,29 +103,41 @@ void setup() {
   // Per datasheet, start clock
   delay(20);
   // Configure analog loopback, power on
-  write16(0xe0, 0x0900);
+  //write16(0xe0, 0x0900);
+  // TX on, no loopback
+  write16(0xe0, 0x0100);
   // TX control
-  write16(0xe1, 0b0111111000010110);
+  write16(0xe1, 0b0111000000010110);
   // RX control
-  write16(0xe2, 0b0111111000110110);
-  // Clear any crap
-  read8(0xe5);
-  
-  delay(100);
-  // Send some data?
-  //write8(0xe3, 0xaa);
-  write8(0xe3, 0x88);
-  
+  write16(0xe2, 0b0111111000110110); 
   Serial.println("Started");
 }
 
-void loop() {
+int rxReady() {
   uint16_t a = read16(0xe6);
-  Serial.println(a, HEX);
-  if (a & 0x0040) {
+  return (a & 0b0000000001000000) != 0;
+}
+
+int txReady() {
+  uint16_t a = read16(0xe6);
+  return (a & 0b0000100000000000) != 0;
+}
+
+void loop() {
+  
+   // Check for inbound on the modem
+  if (rxReady()) {
     uint8_t d = read8(0xe5);
-    Serial.print("GOT ");
-    Serial.println(d, HEX);
+    Serial.print((char)d);
   }
-  delay(1000);
+
+  if (Serial.available()) {
+    int c = Serial.read();
+    // Wait util we can send
+    while (!txReady()) {
+    }
+    write8(0xe3, (uint8_t)c);
+  }
+  
+  delay(10);
 }
