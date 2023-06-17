@@ -2,6 +2,7 @@
 #define CLK_PIN 4
 #define TX_PIN 5
 #define CS_PIN 6
+#define HOOKSWITCH_PIN 7
 
 void strobeClk() {
   digitalWrite(CLK_PIN, 1);
@@ -80,39 +81,6 @@ uint16_t read16(uint8_t addr) {
   return (msb << 8) | lsb;
 }
 
-void setup() {
-
-  Serial.begin(9600);
- 
-  pinMode(RX_PIN, INPUT);
-  pinMode(CLK_PIN, OUTPUT);
-  pinMode(TX_PIN, OUTPUT);
-  pinMode(CS_PIN, OUTPUT);
-
-  digitalWrite(CLK_PIN, 0);
-  digitalWrite(TX_PIN, 0);
-  digitalWrite(CS_PIN, 1);
-
-  delay(200);
-  
-  // General reset
-  write0(0x01);
-  delay(20);
-  // Write general control to power on
-  write16(0xe0, 0x0180);
-  // Per datasheet, start clock
-  delay(20);
-  // Configure analog loopback, power on
-  //write16(0xe0, 0x0900);
-  // TX on, no loopback
-  write16(0xe0, 0x0100);
-  // TX control
-  write16(0xe1, 0b0111000000010110);
-  // RX control
-  write16(0xe2, 0b0111111000110110); 
-  Serial.println("Started");
-}
-
 int rxReady() {
   uint16_t a = read16(0xe6);
   return (a & 0b0000000001000000) != 0;
@@ -123,21 +91,265 @@ int txReady() {
   return (a & 0b0000100000000000) != 0;
 }
 
-void loop() {
+int programReady() {
+  uint16_t a = read16(0xe6);
+  return (a & 0b0010000000000000) != 0;
+}
+
+void setupModem() {
+  // TX control
+  // We are the answering modem (high band)
+  //write16(0xe1, 0b0111000000010110);
+  write16(0xe1, 0b0111111000010110);
+  // RX control
+  // This is the calling modem setting used for echo test:
+  //write16(0xe2, 0b0111111000110110); 
+  // We are the answering modem (low band)
+  write16(0xe2, 0b0110111000110110); 
+}
+
+void sendSilence() {
+  // TX control: Tone pair TA
+  write16(0xe1, 0b0001000000000000);
+}
+
+void sendDialTone() {
+  // TX control: Tone pair TA
+  write16(0xe1, 0b0001000000001100);
+}
+
+void sendRingTone() {
+  // TX control: Tone pair TB
+  write16(0xe1, 0b0001000000001101);
+}
+
+void setup() {
+
+  Serial.begin(9600);
+ 
+  pinMode(RX_PIN, INPUT);
+  pinMode(CLK_PIN, OUTPUT);
+  pinMode(TX_PIN, OUTPUT);
+  pinMode(CS_PIN, OUTPUT);
+  pinMode(HOOKSWITCH_PIN, INPUT);
+
+  digitalWrite(CLK_PIN, 0);
+  digitalWrite(TX_PIN, 0);
+  digitalWrite(CS_PIN, 1);
+
+  delay(200);
   
-   // Check for inbound on the modem
-  if (rxReady()) {
-    uint8_t d = read8(0xe5);
-    Serial.print((char)d);
+  // General reset
+  write0(0x01);
+  delay(20);
+
+  // Write general control to power on
+  write16(0xe0, 0x0180);
+
+  // Per datasheet, start clock
+  delay(20);
+
+  // Configure analog loopback, power on
+  //write16(0xe0, 0x0900);
+  // TX on, no loopback
+  write16(0xe0, 0x0100);
+
+  // Program the tone pairs
+  while (!programReady()) { }
+  write16(0xe8, 0x8000);
+
+  // TA is used for US dial tone
+  
+  // TA1 frequency is 440, 440 * 3.414 = 1502, hex = 05DE
+  while (!programReady()) { }
+  write16(0xe8, 0x05DE);
+  // TA1 amplitude is 0.5Vrms * 93780 / 3.3 = 14,209, hex = 3781
+  while (!programReady()) { }
+  write16(0xe8, 0x3981);
+  // TA2 frequency is 350, 350 * 3.414 = 1194, hex = 04AA
+  while (!programReady()) { }
+  write16(0xe8, 0x04AA);
+  // TA2 amplitude is 0.5Vrms * 93780 / 3.3 = 14,209, hex = 3781
+  while (!programReady()) { }
+  write16(0xe8, 0x3981);
+
+  // TB is used for US ring tone
+  // TB1 frequency is 440, 440 * 3.414 = 1502, hex = 05DE
+  while (!programReady()) { }
+  write16(0xe8, 0x05DE);
+  // TB1 amplitude is 0.5Vrms * 93780 / 3.3 = 14,209, hex = 3781
+  while (!programReady()) { }
+  write16(0xe8, 0x3981);
+  // TB2 frequency is 480, 480 * 3.414 = 1638 , hex = 0666 
+  while (!programReady()) { }
+  write16(0xe8, 0x0666);
+  // TB2 amplitude is 0.5Vrms * 93780 / 3.3 = 14,209, hex = 3781
+  while (!programReady()) { }
+  write16(0xe8, 0x3981);
+
+  //setupModem();
+  //setupDialTone();
+  //setupRingTone();
+
+  sendSilence();
+ 
+  Serial.println("Started");
+}
+
+#define ON_HOOK 1
+#define OFF_HOOK 0
+
+int lastHs = 1;
+long lastHsTransition = 0;
+int hsState = ON_HOOK;
+
+int state = 0;
+long stateChangeStamp = 0;
+int clickCount = 0;
+int digitCount = 0;
+
+void loop() {
+
+  if (state == 11) {
+    // Check for inbound on the modem
+    if (rxReady()) {
+      uint8_t d = read8(0xe5);
+      Serial.print((char)d);
+    }
+  
+    if (Serial.available()) {
+      int c = Serial.read();
+      // Wait util we can send
+      while (!txReady()) {
+      }
+      write8(0xe3, (uint8_t)c);
+    }
+  }
+   
+  int hs = digitalRead(HOOKSWITCH_PIN);
+  // Look for a hookswitch transition  
+  if (hs != lastHs) {
+    lastHs = hs;
+    lastHsTransition = millis();
+  }  
+
+  // Look for debounced hookswitch transition
+  if (millis() - lastHsTransition > 10) {
+    hsState = lastHs;
   }
 
-  if (Serial.available()) {
-    int c = Serial.read();
-    // Wait util we can send
-    while (!txReady()) {
+  // State machine
+
+  // Hung up
+  if (state == 0) {
+    if (hsState == OFF_HOOK) {
+      Serial.println("Off Hook");
+
+      // Short delay before the tone starts
+      delay(200);      
+      sendDialTone();
+      
+      clickCount = 0;
+      digitCount = 0;
+      state = 1;
+      stateChangeStamp = millis();
     }
-    write8(0xe3, (uint8_t)c);
   }
-  
-  delay(10);
+  // Sending dial tone
+  else if (state == 1) {
+    // Look for break.  Could be hang up or dialing.
+    if (hsState == ON_HOOK) {
+      // Turn off dial tone
+      sendSilence();
+      state = 2;
+      stateChangeStamp = millis();
+    }
+  }
+  // A first break was detected, look for dialing
+  else if (state == 2) {
+    if (hsState == ON_HOOK) {
+      // Look for hang up
+      if (millis() - stateChangeStamp > 500) {
+        state = 0;
+        stateChangeStamp = millis();
+        Serial.println("On hook");
+      }
+    }
+    // Look for transition back off hook.  This indicates
+    // dialing
+    else if (hsState == OFF_HOOK) {
+      state = 4;
+      stateChangeStamp = millis();
+      clickCount++;
+    }
+  }
+  // In this state a click (rising edge) was just recorded
+  else if (state == 4) {
+    if (hsState == ON_HOOK) {
+      state = 2;
+      stateChangeStamp = millis();
+    } else {
+      // Look for digit timeout
+      if (millis() - stateChangeStamp > 250) {
+        Serial.print("Got digit ");
+        Serial.println(clickCount);
+        clickCount = 0;
+        digitCount++;
+        // Check to see if we have a full number
+        if (digitCount == 5) {
+          state = 10;
+        } else {
+          state = 5;   
+        }
+      }
+    }
+  }
+  // In this state we are waiting for the next digit to be dialed,
+  // or timeout
+  else if (state == 5) {
+    // Look for break.  Could be hang up or more dialing.
+    if (hsState == ON_HOOK) {
+      state = 2;
+      stateChangeStamp = millis();
+    } else {
+      // Look for inter-digit timeout
+      if (millis() - stateChangeStamp > 10000) {
+        Serial.println("Gave up waiting for dialing");
+        // Send error
+        state = 99;
+        stateChangeStamp = millis();
+      }
+    }
+  }
+  else if (state == 10) {
+    Serial.println("Connecting ...");
+    delay(1000);
+    sendRingTone();
+    delay(2000);
+    sendSilence();
+    delay(4000);
+    sendRingTone();
+    delay(2000);
+    sendSilence();
+    delay(4000);    
+    Serial.println("Connected");   
+    setupModem();
+    state = 11;
+    stateChangeStamp = millis();
+  }
+  else if (state == 11) {
+    // Wait for hangup
+    if (hsState == ON_HOOK) {
+      state = 0;
+      stateChangeStamp = millis();
+      Serial.println("On hook");
+    }
+  }
+  else if (state == 99) {
+    if (hsState == ON_HOOK) {
+      state = 0;
+      stateChangeStamp = millis();
+      Serial.println("On hook");
+    }
+  }
 }
