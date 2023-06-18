@@ -187,13 +187,12 @@ void setup() {
   while (!programReady()) { }
   write16(0xe8, 0x3981);
 
-  //setupModem();
-  //setupDialTone();
-  //setupRingTone();
-
   sendSilence();
- 
-  Serial.println("Started");
+
+  Serial.write(26);
+  Serial.write(26);
+  Serial.print("AT");
+  Serial.write(10);
 }
 
 #define ON_HOOK 1
@@ -207,6 +206,7 @@ int state = 0;
 long stateChangeStamp = 0;
 int clickCount = 0;
 int digitCount = 0;
+int dialDigits[10];
 
 void loop() {
 
@@ -234,7 +234,7 @@ void loop() {
   }  
 
   // Look for debounced hookswitch transition
-  if (millis() - lastHsTransition > 10) {
+  if (millis() - lastHsTransition > 20) {
     hsState = lastHs;
   }
 
@@ -243,7 +243,8 @@ void loop() {
   // Hung up
   if (state == 0) {
     if (hsState == OFF_HOOK) {
-      Serial.println("Off Hook");
+
+      //Serial.println("Off Hook");
 
       // Short delay before the tone starts
       delay(200);      
@@ -257,6 +258,13 @@ void loop() {
   }
   // Sending dial tone
   else if (state == 1) {
+    // Look for timeout
+    if (millis() - stateChangeStamp > 15000) {
+      //Serial.println("No dial");
+      sendSilence();
+      state = 99;
+      stateChangeStamp = millis();
+    }
     // Look for break.  Could be hang up or dialing.
     if (hsState == ON_HOOK) {
       // Turn off dial tone
@@ -272,7 +280,7 @@ void loop() {
       if (millis() - stateChangeStamp > 500) {
         state = 0;
         stateChangeStamp = millis();
-        Serial.println("On hook");
+        //Serial.println("On hook");
       }
     }
     // Look for transition back off hook.  This indicates
@@ -291,12 +299,13 @@ void loop() {
     } else {
       // Look for digit timeout
       if (millis() - stateChangeStamp > 250) {
-        Serial.print("Got digit ");
-        Serial.println(clickCount);
-        clickCount = 0;
+        //Serial.print("Got digit ");
+        //Serial.println(clickCount);
+        dialDigits[digitCount] = clickCount;
+        clickCount = 0;        
         digitCount++;
         // Check to see if we have a full number
-        if (digitCount == 5) {
+        if (digitCount == 7) {
           state = 10;
         } else {
           state = 5;   
@@ -314,7 +323,7 @@ void loop() {
     } else {
       // Look for inter-digit timeout
       if (millis() - stateChangeStamp > 10000) {
-        Serial.println("Gave up waiting for dialing");
+        //Serial.println("Gave up waiting for dialing");
         // Send error
         state = 99;
         stateChangeStamp = millis();
@@ -322,7 +331,12 @@ void loop() {
     }
   }
   else if (state == 10) {
-    Serial.println("Connecting ...");
+
+    //Serial.print("Connecting to ");
+    //for (int i = 0; i < digitCount; i++) 
+    //  Serial.print(dialDigits[i]);
+    //Serial.println();
+
     delay(1000);
     sendRingTone();
     delay(2000);
@@ -332,24 +346,35 @@ void loop() {
     delay(2000);
     sendSilence();
     delay(4000);    
-    Serial.println("Connected");   
+
     setupModem();
     state = 11;
     stateChangeStamp = millis();
+
+    Serial.write(10);   
+    Serial.print("AT+CONN=1.1.1.1");   
+    Serial.write(10);   
   }
   else if (state == 11) {
     // Wait for hangup
     if (hsState == ON_HOOK) {
+
+      Serial.write(26);
+      Serial.write(26);
+      Serial.print("AT+DISC");
+      Serial.write(10);
+      
+      sendSilence();
+      
       state = 0;
       stateChangeStamp = millis();
-      Serial.println("On hook");
     }
   }
   else if (state == 99) {
     if (hsState == ON_HOOK) {
       state = 0;
       stateChangeStamp = millis();
-      Serial.println("On hook");
+      //Serial.println("On hook");
     }
   }
 }
