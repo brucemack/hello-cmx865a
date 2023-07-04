@@ -3,6 +3,7 @@
 #define TX_PIN 5
 #define CS_PIN 6
 #define HOOKSWITCH_PIN 7
+#define LED_PIN 13
 
 void strobeClk() {
   digitalWrite(CLK_PIN, 1);
@@ -86,6 +87,12 @@ int rxReady() {
   return (a & 0b0000000001000000) != 0;
 }
 
+int rxEnergy() {
+  uint16_t a = read16(0xe6);
+  //            5432109876543210
+  return (a & 0b0000010000000000) != 0;
+}
+
 int txReady() {
   uint16_t a = read16(0xe6);
   return (a & 0b0000100000000000) != 0;
@@ -99,13 +106,19 @@ int programReady() {
 void setupModem() {
   // TX control
   // We are the answering modem (high band)
-  //write16(0xe1, 0b0111000000010110);
-  write16(0xe1, 0b0111111000010110);
+  //              5432109876543210    
+  write16(0xe1, 0b0111011000010110);
+  // TX OFF
+  //write16(0xe1, 0b0000111000010110);
+
   // RX control
   // This is the calling modem setting used for echo test:
+  //              5432109876543210    
   //write16(0xe2, 0b0111111000110110); 
   // We are the answering modem (low band)
-  write16(0xe2, 0b0110111000110110); 
+  // NORMAL:
+  //              5432109876543210    
+  write16(0xe2, 0b0110000000110110); 
 }
 
 void sendSilence() {
@@ -123,6 +136,15 @@ void sendRingTone() {
   write16(0xe1, 0b0001000000001101);
 }
 
+void sendText(const char* s) {
+  for (unsigned int i = 0; s[i] != 0; i++) {
+    // Wait util we can send
+    while (!txReady()) {
+    }
+    write8(0xe3, (uint8_t)s[i]);
+  }
+}
+
 void setup() {
 
   Serial.begin(9600);
@@ -132,34 +154,39 @@ void setup() {
   pinMode(TX_PIN, OUTPUT);
   pinMode(CS_PIN, OUTPUT);
   pinMode(HOOKSWITCH_PIN, INPUT);
+  pinMode(LED_PIN, OUTPUT);
 
   digitalWrite(CLK_PIN, 0);
   digitalWrite(TX_PIN, 0);
   digitalWrite(CS_PIN, 1);
 
-  delay(200);
-  
+  Serial.println("Starting");
+
   // General reset
   write0(0x01);
+
   delay(20);
 
   // Write general control to power on
-  write16(0xe0, 0x0180);
-
+  //write16(0xe0, 0x0180); 
+  //              5432109876543210
+  write16(0xe0, 0b0000000110000000);
+  
   // Per datasheet, start clock
   delay(20);
 
   // Configure analog loopback, power on
   //write16(0xe0, 0x0900);
-  // TX on, no loopback
-  write16(0xe0, 0x0100);
-
+  //              5432109876543210
+  write16(0xe0, 0b0000000100000000);
+    
   // Program the tone pairs
   while (!programReady()) { }
+  //Serial.println("Programming ...");
+
   write16(0xe8, 0x8000);
 
   // TA is used for US dial tone
-  
   // TA1 frequency is 440, 440 * 3.414 = 1502, hex = 05DE
   while (!programReady()) { }
   write16(0xe8, 0x05DE);
@@ -187,8 +214,10 @@ void setup() {
   while (!programReady()) { }
   write16(0xe8, 0x3981);
 
-  sendSilence();
-
+  //sendSilence();
+  //sendDialTone();
+  //setupModem();
+  
   Serial.write(26);
   Serial.write(26);
   Serial.print("AT");
@@ -201,8 +230,12 @@ void setup() {
 int lastHs = 1;
 long lastHsTransition = 0;
 int hsState = ON_HOOK;
+// TEST
+//int hsState = OFF_HOOK;
 
 int state = 0;
+// TEST: Jump to TX/RX
+//int state = 11;
 long stateChangeStamp = 0;
 int clickCount = 0;
 int digitCount = 0;
@@ -211,10 +244,14 @@ int dialDigits[10];
 void loop() {
 
   if (state == 11) {
+    
     // Check for inbound on the modem
     if (rxReady()) {
       uint8_t d = read8(0xe5);
       Serial.print((char)d);
+      // Echo typed characters
+      while (!txReady()) { }
+      write8(0xe3, (uint8_t)d);
     }
   
     if (Serial.available()) {
@@ -224,18 +261,32 @@ void loop() {
       }
       write8(0xe3, (uint8_t)c);
     }
+
+    // Show RX energy
+    if (rxEnergy()) {
+      digitalWrite(LED_PIN, 1);
+    } else {
+      digitalWrite(LED_PIN, 0);      
+    }
   }
    
-  int hs = digitalRead(HOOKSWITCH_PIN);
   // Look for a hookswitch transition  
+  int hs = digitalRead(HOOKSWITCH_PIN);
   if (hs != lastHs) {
     lastHs = hs;
     lastHsTransition = millis();
   }  
 
   // Look for debounced hookswitch transition
-  if (millis() - lastHsTransition > 20) {
+  // (was 20)
+  if (millis() - lastHsTransition > 50 && hsState != lastHs) {
     hsState = lastHs;
+    // Use LED to show hook state
+    if (hsState == OFF_HOOK) {
+      //digitalWrite(LED_PIN, 1);
+    } else {
+      //digitalWrite(LED_PIN, 0);
+    }
   }
 
   // State machine
@@ -243,12 +294,12 @@ void loop() {
   // Hung up
   if (state == 0) {
     if (hsState == OFF_HOOK) {
-
       //Serial.println("Off Hook");
 
       // Short delay before the tone starts
       delay(200);      
       sendDialTone();
+      //setupModem();
       
       clickCount = 0;
       digitCount = 0;
@@ -351,11 +402,17 @@ void loop() {
     state = 11;
     stateChangeStamp = millis();
 
+    // Notify that we have a connection
     Serial.write(10);   
     Serial.print("AT+CONN=1.1.1.1");   
     Serial.write(10);   
+
+    // Send a message to the remote station
+    delay(1000);
+    sendText("You are now connected.\r\nWelcome to the 1980's\r\n\r\n");
   }
   else if (state == 11) {
+    
     // Wait for hangup
     if (hsState == ON_HOOK) {
 
